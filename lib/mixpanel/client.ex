@@ -79,15 +79,23 @@ defmodule Mixpanel.Client do
   @spec engage(module, [{distinct_id, String.t(), map}], Mixpanel.engage_options()) ::
           :ok
   def engage(server, [{_, _, _} | _] = batch, opts) do
-    opts = validate_options(opts, [:ip, :time, :ignore_time], :opts)
-    GenServer.cast(server, {:engage, Enum.map(batch, &build_engage_event(&1, opts))})
+    opts = validate_options(opts, [:ip, :time, :ignore_time, :token], :opts)
+
+    GenServer.cast(
+      server,
+      {:engage, Enum.map(batch, &build_engage_event(&1, opts)), opts[:token]}
+    )
   end
 
   @doc export: true
   @spec engage(module, distinct_id, String.t(), map, Mixpanel.engage_options()) :: :ok
   def engage(server, distinct_id, operation, value, opts) do
-    opts = validate_options(opts, [:ip, :time, :ignore_time], :opts)
-    GenServer.cast(server, {:engage, build_engage_event({distinct_id, operation, value}, opts)})
+    opts = validate_options(opts, [:ip, :time, :ignore_time, :token], :opts)
+
+    GenServer.cast(
+      server,
+      {:engage, build_engage_event({distinct_id, operation, value}, opts), opts[:token]}
+    )
   end
 
   @doc """
@@ -119,7 +127,7 @@ defmodule Mixpanel.Client do
 
   @spec handle_cast(
           {:track, event, properties}
-          | {:engage, event}
+          | {:engage, event, String.t() | nil}
           | {:create_alias, alias_id, distinct_id},
           State.t()
         ) :: {:noreply, State.t()}
@@ -165,13 +173,15 @@ defmodule Mixpanel.Client do
   end
 
   @impl GenServer
-  def handle_cast({:engage, event}, state) do
+  def handle_cast({:engage, event, token}, state) do
     data =
       event
-      |> put_token(state.project_token)
+      |> put_token(token, state.project_token)
       |> encode_params()
 
-    case HTTP.get(state.http_adapter, state.base_url <> @engage_endpoint, [], params: [data: data]) do
+    case HTTP.get(state.http_adapter, state.base_url <> @engage_endpoint, [],
+           params: [data: data]
+         ) do
       {:ok, _, _, _} ->
         :ok
 
@@ -224,11 +234,11 @@ defmodule Mixpanel.Client do
   def terminate(_reason, state),
     do: Mixpanel.Telemetry.stop_span(state.span, %{}, %{name: state.name})
 
-  defp put_token(events, project_token) when is_list(events),
-    do: Enum.map(events, &put_token(&1, project_token))
+  defp put_token(events, project_token, default_token) when is_list(events),
+    do: Enum.map(events, &put_token(&1, project_token, default_token))
 
-  defp put_token(event, project_token),
-    do: Map.put(event, :"$token", project_token)
+  defp put_token(event, project_token, default_token),
+    do: Map.put(event, :"$token", project_token || default_token)
 
   defp encode_params(params),
     do: Jason.encode!(params) |> :base64.encode()
